@@ -1,394 +1,513 @@
-# Parrot with Alzheimer's 🦜
-### A Hands-On Guide to Building Your First LLM from Scratch
+# GPT Language Model - From Scratch
 
----
-
-## Project Overview
-
-**Goal:** Build a tiny language model trained on Simple English Wikipedia (~235MB plain text) to understand the complete LLM development pipeline.
-
-**Expected Result:** A text generator that produces Wikipedia-style sentences with basic coherence for 2-3 sentences before losing the plot.
-
-**Time Investment:** 15-20 hours over one weekend  
-**Hardware:** GPU recommended (GTX 1060 or better), CPU training possible but slow (1-2 days)
-
----
-
-## Step 1: Data Collection
-
-**Objective:** Obtain raw training data from Wikipedia. The model learns language patterns by analyzing large amounts of text, so we need a substantial corpus of well-written, diverse content.
-
-**Tools:**
-- `wget` for downloading
-- `wikiextractor` or `mwparserfromhell` for XML parsing
-- Python `requests` library (alternative)
-
-**Process:**
-1. Download Wikipedia dump (Simple English Wikipedia recommended)
-2. Download size: ~350MB compressed (.bz2)
-3. Unpacked XML size: ~1.52 GB
-4. Extract plain text from XML (removes markup, templates, etc.)
-5. Final plain text: ~238 MB (approximately 200,000 articles)
-
-**Input:** Wikipedia dump URLs  
-**Output:** `data/raw_wikipedia.txt` (~238 MB plain text file)
-
-**Commands:**
-```bash
-mkdir data
-
-# Download compressed Wikipedia dump
-wget https://dumps.wikimedia.org/simplewiki/latest/simplewiki-latest-pages-articles.xml.bz2
-
-# Extract
-bzip2 -d simplewiki-latest-pages-articles.xml.bz2
-
-# Install WikiExtractor
-pip install wikiextractor
-
-# Convert XML to plain text
-wikiextractor simplewiki-latest-pages-articles.xml -o extracted --no-templates
-
-# Combine all extracted files into one
-find extracted -name 'wiki_*' -exec cat {} \; > data/raw_wikipedia.txt
-```
-
-**Success Criteria:** You have a single ~238 MB text file with readable Wikipedia content, no XML tags or wiki markup
-
----
-
-## Step 2: Data Preprocessing
-
-**Objective:** Clean and normalize text for training. Removing noise and inconsistencies ensures the model learns from high-quality patterns rather than formatting artifacts or errors.
-
-**Tools:**
-- Python standard library (`re`, `unicodedata`)
-- Custom cleaning script
-
-**Process:**
-1. Remove special characters and excessive whitespace
-2. Normalize Unicode (handle accents, symbols)
-3. Convert to lowercase (optional, simplifies vocab)
-4. Split into train (90%) and validation (10%) sets
-5. Remove very short lines (< 10 characters)
-
-**Input:** `data/raw_wikipedia.txt` (~238 MB)  
-**Output:** 
-- `data/train.txt` (~210 MB)
-- `data/val.txt` (~23 MB)
-
-**Key Considerations:**
-- Keep punctuation (helps model learn sentence structure)
-- Preserve numbers (useful for facts)
-- Don't remove common special characters like quotes
-
-**Estimated Processing Time:** 1-2 minutes
-
----
-
-## Step 3: Tokenization
-
-**Objective:** Convert text into numerical tokens the model can process. Neural networks operate on numbers, not text, so we transform each character into a unique ID that the model can mathematically process.
-
-**Tools:**
-- Custom Python tokenizer class
-- Or `tiktoken` library (OpenAI's tokenizer)
-
-**Approach:** Character-level tokenization (simplest)
-- Each unique character becomes a token
-- Vocabulary size: ~50-100 tokens
-- Alternative: Use BPE (Byte-Pair Encoding) for subword tokens
-
-**Process:**
-1. Scan entire dataset to build vocabulary
-2. Create char → ID and ID → char mappings
-3. Encode all text into token IDs
-4. Save as numpy arrays for fast loading
-
-**Input:** `data/train.txt`, `data/val.txt`  
-**Output:**
-- `data/vocab.json` (character to ID mapping, ~50 entries)
-- `data/train_tokens.npy` (numpy array of integers)
-- `data/val_tokens.npy` (numpy array of integers)
-- `tokenizer.py` (encode/decode functions)
-
-**Example Vocabulary:**
-```json
-{
-  "a": 0, "b": 1, "c": 2, ..., " ": 26, ".": 27, "!": 28
-}
-```
-
-**Code Structure:**
-```python
-class CharTokenizer:
-    def __init__(self, vocab):
-        self.char_to_id = vocab
-        self.id_to_char = {v: k for k, v in vocab.items()}
-    
-    def encode(self, text):
-        return [self.char_to_id[c] for c in text]
-    
-    def decode(self, ids):
-        return ''.join([self.id_to_char[i] for i in ids])
-```
-
----
-
-## Step 4: Model Architecture
-
-**Objective:** Define the transformer neural network. The transformer architecture uses attention mechanisms to learn which parts of the input are relevant for predicting the next token.
-
-**Tools:** PyTorch (`torch.nn`, `torch.nn.functional`)
-
-**Architecture Specifications:**
-- **Type:** Decoder-only Transformer (GPT-style)
-- **Layers:** 4 transformer blocks
-- **Embedding Dimension:** 128
-- **Attention Heads:** 4 (32 dims per head)
-- **Context Length:** 256 tokens
-- **Feedforward Dimension:** 512 (4x embedding dim)
-- **Vocabulary Size:** ~50-100 (from tokenizer)
-- **Total Parameters:** ~2-3 million
-
-**Input:** Model configuration dictionary  
-**Output:** `model.py` containing:
-- `TransformerBlock` class
-- `GPTModel` class
-- `generate()` function
-
-**Key Components:**
-1. Token embedding layer
-2. Positional embedding layer
-3. Multi-head self-attention
-4. Feedforward network
-5. Layer normalization
-6. Dropout for regularization
-
-**File Structure:**
-```
-model.py
-├── class MultiHeadAttention
-├── class FeedForward
-├── class TransformerBlock
-└── class GPTModel
-```
-
----
-
-## Step 5: Training Loop
-
-**Objective:** Train the model to predict next characters. By repeatedly guessing the next character and correcting its mistakes, the model gradually learns the statistical patterns of language.
-
-**Tools:**
-- PyTorch training utilities
-- `torch.optim.AdamW` optimizer
-- `torch.utils.data.DataLoader`
-
-**Training Configuration:**
-- **Learning Rate:** 3e-4
-- **Batch Size:** 32
-- **Context Window:** 256 tokens
-- **Max Steps:** 12,000-15,000 iterations (adjusted for 210MB dataset)
-- **Warmup Steps:** 500
-- **Weight Decay:** 0.1
-- **Gradient Clipping:** 1.0
-
-**Process:**
-1. Initialize model with random weights
-2. Load batches of token sequences
-3. Forward pass: predict next token
-4. Calculate cross-entropy loss
-5. Backward pass: compute gradients
-6. Update weights with optimizer
-7. Log loss every 100 steps
-8. Save checkpoint every 1,500 steps
-
-**Input:**
-- `data/train_tokens.npy`
-- `model.py`
-- Config file or hyperparameters
-
-**Output:**
-- `checkpoints/model_step_15000.pt` (trained weights)
-- `logs/training_log.csv` (step, loss, learning_rate)
-
-**Training Time:**
-- **CPU:** 24-36 hours (possible but slow)
-- **GPU (GTX 1060):** 4-6 hours
-- **GPU (RTX 3070/3080):** 1.5-2.5 hours
-- **GPU (RTX 4090):** 30-60 minutes
-
-**What to Watch:**
-- Loss should decrease from ~4.0 to ~1.5-2.0
-- If loss doesn't decrease after 1000 steps, check learning rate
-- Save multiple checkpoints (early ones might be more coherent!)
-- Training typically converges around 10,000-12,000 steps
-
----
-
-## Step 6: Text Generation
-
-**Objective:** Use trained model to generate text from prompts. The model applies its learned patterns to predict and sample the most likely next characters, building coherent text one token at a time.
-
-**Tools:**
-- PyTorch inference mode
-- Sampling strategies (temperature, top-k, top-p)
-
-**Process:**
-1. Load trained model checkpoint
-2. Encode input prompt to tokens
-3. Generate tokens one at a time
-4. Apply sampling strategy to pick next token
-5. Decode tokens back to text
-
-**Input:**
-- `checkpoints/model_step_15000.pt`
-- `data/vocab.json`
-- Prompt text: "The theory of relativity"
-
-**Output:** Generated text continuation
-
-**Sampling Parameters:**
-- **Temperature:** 0.8 (lower = safer, higher = creative)
-- **Top-k:** 40 (consider only top 40 tokens)
-- **Max Length:** 100 tokens
-- **Repetition Penalty:** 1.2 (discourage loops)
-
-**Example Script:**
-```python
-python generate.py \
-  --checkpoint checkpoints/model_step_15000.pt \
-  --prompt "Albert Einstein was" \
-  --length 50 \
-  --temperature 0.7
-```
-
-**Interface Options:**
-1. Command-line script (simplest)
-2. Jupyter notebook (interactive)
-3. Gradio web UI (user-friendly)
-
----
-
-## Step 7: Evaluation & Metrics
-
-**Objective:** Measure model performance quantitatively. Metrics like perplexity tell us how well the model predicts text it hasn't seen, helping us understand if training was successful.
-
-**Tools:**
-- PyTorch evaluation mode
-- Custom metric calculations
-
-**Metrics to Calculate:**
-1. **Validation Loss:** How well model predicts held-out data
-2. **Perplexity:** exp(loss) - lower is better (target: 4-8)
-3. **Sample Quality:** Manual inspection of generated text
-
-**Process:**
-1. Load validation data
-2. Run model in eval mode (no dropout)
-3. Calculate average loss across all validation batches
-4. Convert to perplexity
-5. Generate 10-20 samples for qualitative review
-
-**Input:**
-- `checkpoints/model_step_15000.pt`
-- `data/val_tokens.npy`
-
-**Output:**
-- `results/evaluation_metrics.txt`
-- `results/sample_generations.txt`
-
-**Benchmarks:**
-- **Good:** Perplexity < 6, coherent for 2-3 sentences
-- **Okay:** Perplexity 6-10, somewhat coherent
-- **Poor:** Perplexity > 10, mostly gibberish
-
-**Note:** With ~210MB of training data (Simple English Wikipedia), expect decent results but not as polished as models trained on larger datasets.
-
----
+A minimal implementation of GPT (Generative Pre-trained Transformer) trained on Simple English Wikipedia. Train a 2.8M parameter language model in 2-4 hours on M1 Mac.
 
 ## Project Structure
 
 ```
-parrot-with-alzheimers/
-├── data/
-│   ├── raw_wikipedia.txt
-│   ├── train.txt
-│   ├── val.txt
-│   ├── vocab.json
-│   ├── train_tokens.npy
-│   └── val_tokens.npy
-├── src/
-│   ├── tokenizer.py
-│   ├── model.py
-│   ├── train.py
-│   ├── generate.py
-│   └── evaluate.py
-├── checkpoints/
-│   └── model_step_15000.pt
-├── logs/
-│   └── training_log.csv
-├── results/
-│   ├── evaluation_metrics.txt
-│   └── sample_generations.txt
-└── README.md
+.
+├── config.py              # Model architecture configurations (tiny/small/medium/large)
+├── tokenizer.py           # Character-level tokenizer
+├── model.py               # Transformer architecture implementation
+├── preprocess_data.py     # Raw text cleaning and splitting
+├── tokenize.py            # Convert text to token arrays
+├── train.py               # Training loop and optimization
+├── generate.py            # Text generation from trained model
+├── create_model.py        # Model inspection utility
+├── test_model.py          # Architecture validation tests
+└── requirements.txt       # Python dependencies
 ```
 
----
+## File Descriptions
+
+### Core Architecture
+- **`config.py`** - Defines model configurations (tiny/small/medium/large) with hyperparameters. Provides `get_config()` to select architecture by name and validates that embed_dim is divisible by num_heads.
+- **`tokenizer.py`** - Implements character-level tokenization with encode/decode methods and vocabulary management. Supports both CharTokenizer and SubwordTokenizer.
+- **`model.py`** - Complete GPT architecture: multi-head attention, transformer blocks, embeddings, and text generation logic with top-k sampling.
+
+### Data Pipeline
+- **`preprocess_data.py`** - Cleans raw Wikipedia text (unicode normalization, whitespace handling) and splits into train/validation sets (90/10 split).
+- **`tokenize.py`** - Builds vocabulary from training data and converts text files into numpy token arrays for efficient training.
+
+### Training & Inference
+- **`train.py`** - Main training script that loads config via `get_config()`, initializes model, runs training with AdamW optimizer, learning rate scheduling, and saves checkpoints.
+- **`generate.py`** - Loads trained checkpoint and generates text with configurable temperature and top-k sampling.
+
+### Utilities
+- **`create_model.py`** - Creates model from config, prints architecture summary, parameter count, and memory estimates. Use `--list-configs` to see all available configurations.
+- **`test_model.py`** - Runs unit tests on model components to verify shapes, forward pass, config validation, and save/load functionality.
+
+## The Process: Data → Model
+
+### Step 1: Download Data
+```bash
+# Download Simple English Wikipedia (~350MB)
+wget https://dumps.wikimedia.org/simplewiki/latest/simplewiki-latest-pages-articles.xml.bz2
+
+# Extract plain text (~238MB)
+pip install wikiextractor
+python -m wikiextractor.WikiExtractor simplewiki-latest-pages-articles.xml.bz2 -o data/extracted
+
+# Combine all text files
+find data/extracted -name 'wiki_*' -exec cat {} \; > data/raw_wikipedia.txt
+```
+
+### Step 2: Preprocess Text
+```bash
+# Clean and split data (90% train, 10% validation)
+python preprocess_data.py --input data/raw_wikipedia.txt
+
+# Output: data/train.txt (~210MB), data/val.txt (~23MB)
+```
+
+**What it does:** Removes control characters, normalizes unicode, collapses excessive whitespace, filters short lines.
+
+### Step 3: Tokenize
+```bash
+# Build vocabulary and convert to token arrays
+python tokenize.py
+
+# Output: 
+#   data/vocab.json (~2KB)
+#   data/train_tokens.npy (~421MB)
+#   data/val_tokens.npy (~47MB)
+```
+
+**What it does:** Scans text to find ~120 unique characters, creates char↔ID mappings, encodes text as numpy arrays.
+
+### Step 4: Train Model
+```bash
+# Train small model (2.8M parameters, 15K steps, ~3 hours)
+python train.py --config small --max-steps 15000
+
+# Or quick experiment with tiny model
+python train.py --config tiny --max-steps 5000
+
+# Or high-quality medium model
+python train.py --config medium --max-steps 25000
+```
+
+**What it does:** Loads config via `get_config()`, creates model, trains with next-token prediction, saves checkpoints every 1500 steps.
+
+**Expected progress:**
+```
+Step 0:     Loss ~4.6 (random)
+Step 5000:  Loss ~2.0 (learning words)
+Step 10000: Loss ~1.7 (forming sentences)
+Step 15000: Loss ~1.5 (coherent text)
+```
+
+### Step 5: Generate Text
+```bash
+# Generate from trained checkpoint
+python generate.py \
+  --checkpoint checkpoints/model_best.pt \
+  --prompt "The capital of France is" \
+  --max-tokens 200 \
+  --temperature 0.8
+```
+
+**Output example:**
+```
+The capital of France is Paris. Paris is the largest city in France and 
+is located in the northern part of the country. The city has a population 
+of over two million people.
+```
+
+## Quick Start
+
+### Installation
+```bash
+# Install dependencies
+pip install torch numpy pandas matplotlib tqdm
+
+# Or use requirements file
+pip install -r requirements.txt
+```
+
+### Complete Pipeline
+```bash
+# 1. Preprocess (assuming you have raw_wikipedia.txt)
+python preprocess_data.py --input data/raw_wikipedia.txt
+
+# 2. Tokenize
+python tokenize.py
+
+# 3. Train with selected configuration
+python train.py --config small --max-steps 15000
+
+# 4. Generate
+python generate.py --checkpoint checkpoints/model_best.pt --prompt "Hello"
+```
+
+## Configuration Options
+
+### Available Configurations
+
+View all configurations:
+```bash
+python train.py --list-configs
+# or
+python create_model.py --list-configs
+```
+
+| Config | Parameters | Layers | Embed Dim | Heads | Context | Training Time |
+|--------|-----------|---------|-----------|-------|---------|---------------|
+| tiny   | ~500K     | 2       | 64        | 2     | 128     | 2-3 hours    |
+| small  | ~2.8M     | 4       | 128       | 4     | 256     | 3-4 hours    |
+| medium | ~11M      | 6       | 256       | 8     | 512     | 8-12 hours   |
+| large  | ~25M      | 8       | 384       | 12    | 512     | 16-24 hours  |
+
+**Recommendations:**
+- **tiny** - Quick experiments, testing pipeline
+- **small** - Standard training, good balance (recommended)
+- **medium** - Better quality, more memory required
+- **large** - Best quality, requires 16GB+ RAM
+
+### Training Parameters
+```bash
+python train.py \
+  --config small \           # Model size (tiny/small/medium/large)
+  --batch-size 32 \          # Batch size (reduce if OOM)
+  --max-steps 15000 \        # Training steps
+  --learning-rate 3e-4 \     # Peak learning rate
+  --device mps               # Device (mps/cuda/cpu)
+```
+
+### Generation Parameters
+```bash
+python generate.py \
+  --checkpoint path/to/model.pt \
+  --prompt "Your text here" \
+  --max-tokens 200 \         # Length of generation
+  --temperature 0.8 \        # Randomness (0.1=boring, 1.5=creative)
+  --top-k 40                 # Diversity (lower=focused)
+```
+
+## Usage Examples
+
+### Example 1: List Available Configurations
+```bash
+# See all configs with parameter counts and recommendations
+python train.py --list-configs
+```
+
+Output:
+```
+Available Configurations:
+======================================================================
+Config     Params       Embed    Layers   Heads    Context   
+----------------------------------------------------------------------
+tiny       ~0.5M        64       2        2        128       
+small      ~2.8M        128      4        4        256       
+medium     ~11.0M       256      6        8        512       
+large      ~25.0M       384      8        12       512       
+======================================================================
+
+Recommendations:
+  tiny   - Quick experiments (2-3 hours)
+  small  - Standard training (3-4 hours)
+  medium - Better quality (8-12 hours)
+  large  - Best quality (16-24 hours, requires 16GB+ RAM)
+```
+
+### Example 2: Inspect Model Architecture
+```bash
+# View detailed architecture and memory estimates
+python create_model.py --config small
+```
+
+### Example 3: Test Model Components
+```bash
+# Verify architecture works correctly
+python test_model.py
+```
+
+### Example 4: Train Tiny Model (Fast)
+```bash
+# Quick 2-hour training run for testing
+python train.py --config tiny --max-steps 5000 --batch-size 32
+python generate.py --checkpoint checkpoints/model_best.pt --prompt "AI is"
+```
+
+### Example 5: Train Standard Model
+```bash
+# Full training run (~4 hours) - recommended
+python train.py --config small --max-steps 15000
+```
+
+### Example 6: Train High-Quality Model
+```bash
+# Longer training for better results
+python train.py --config medium --max-steps 25000 --batch-size 24
+```
+
+### Example 7: Generate with Different Temperatures
+```bash
+# Conservative (boring but safe)
+python generate.py --checkpoint checkpoints/model_best.pt \
+  --prompt "Water is" --temperature 0.5
+
+# Balanced (recommended)
+python generate.py --checkpoint checkpoints/model_best.pt \
+  --prompt "Water is" --temperature 0.8
+
+# Creative (interesting but risky)
+python generate.py --checkpoint checkpoints/model_best.pt \
+  --prompt "Water is" --temperature 1.2
+```
+
+## Hardware Requirements
+
+**Minimum:**
+- 8GB RAM
+- 10GB disk space
+- CPU (very slow, 24+ hours)
+
+**Recommended:**
+- 16GB RAM
+- Apple M1/M2/M3 or NVIDIA GPU (8GB+)
+- 20GB disk space
+
+**Training Speed by Config:**
+
+| Config | M1 Mac | NVIDIA 3080 | CPU |
+|--------|--------|-------------|-----|
+| tiny   | 2-3h   | 1-2h        | 12-18h |
+| small  | 3-4h   | 2-3h        | 24-36h |
+| medium | 8-12h  | 4-6h        | 48-72h |
+| large  | 16-24h | 8-12h       | 96h+ |
 
 ## Expected Results
 
-**What Your Model Will Do:**
-- Complete simple factual sentences
-- Generate Wikipedia-style prose for 2-3 sentences
-- Learn grammar and punctuation reasonably well
-- Associate related concepts (e.g., "Einstein" → "physics" → "relativity")
-- Use simpler vocabulary (reflecting Simple English Wikipedia's style)
+### Quality by Configuration
+- **tiny:** Basic coherence, 1-2 sentences
+- **small:** Good coherence, 2-3 sentences (recommended)
+- **medium:** Very good coherence, 3-4 sentences
+- **large:** Excellent coherence, 4-5 sentences
 
-**What It Won't Do:**
-- Answer complex questions reliably
-- Follow multi-step instructions
-- Maintain coherence beyond 2-3 sentences
-- Reason logically or understand nuanced context
-- Avoid hallucinating facts (especially for less common topics)
-
-**Sample Output:**
+### Sample Outputs (small config)
 ```
-Prompt: "The capital of France is"
-Output: "Paris. The city is located in the northern part of France and 
-is the largest city in the country. Paris is known for the Eiffel Tower 
-and many museums. The city has a population of over two million people..."
+Prompt: "The solar system contains"
+Output: "eight planets. The planets orbit around the Sun. Mercury is the 
+closest planet to the Sun and Neptune is the farthest."
+
+Prompt: "Albert Einstein was"
+Output: "a German physicist who developed the theory of relativity. He won 
+the Nobel Prize in Physics in 1921 for his work on the photoelectric effect."
+
+Prompt: "Machine learning is"
+Output: "a type of artificial intelligence that allows computers to learn 
+from data without being explicitly programmed. It is used in many applications."
 ```
 
-**Performance Notes:** 
-- Simple English Wikipedia uses simpler language, so outputs will be more accessible
-- ~210MB is a good learning dataset - enough to see real language patterns
-- Smaller vocabulary compared to full Wikipedia means faster training
-- Quality is educational but won't match commercial models
+## Architecture Details
+
+### Model Components
+- **Token Embeddings:** Convert character IDs to vectors
+- **Position Embeddings:** Encode token positions in sequence
+- **Transformer Blocks:** N layers of self-attention + feedforward (N depends on config)
+- **Multi-Head Attention:** Multiple attention heads per layer (varies by config)
+- **Output Head:** Projects to vocabulary size for next-token prediction
+
+### Configuration System
+The `config.py` file provides:
+- **ModelConfig dataclass:** Stores all hyperparameters
+- **Predefined configs:** tiny, small, medium, large
+- **get_config():** Returns config by name
+- **Validation:** Ensures embed_dim divisible by num_heads
+- **to_dict():** Converts config to dict for model initialization
+
+### Training Details
+- **Objective:** Next-token prediction (cross-entropy loss)
+- **Optimizer:** AdamW with weight decay (0.1)
+- **Schedule:** Linear warmup (500 steps) → Cosine decay
+- **Batch Size:** 32 sequences × context_len tokens per batch
+- **Gradient Clipping:** Max norm 1.0
+
+## Troubleshooting
+
+### Out of Memory (OOM)
+```bash
+# Option 1: Reduce batch size
+python train.py --config small --batch-size 16
+
+# Option 2: Use smaller model
+python train.py --config tiny --batch-size 32
+
+# Option 3: Reduce context length (edit config.py)
+# Change max_seq_len in config
+```
+
+### Slow Training
+```bash
+# Check device
+python -c "import torch; print(torch.backends.mps.is_available())"
+
+# Force specific device
+python train.py --device mps  # For M1 Mac
+python train.py --device cuda # For NVIDIA GPU
+```
+
+### Poor Generation Quality
+```bash
+# Option 1: Train longer
+python train.py --max-steps 25000
+
+# Option 2: Use larger config
+python train.py --config medium
+
+# Option 3: Adjust generation parameters
+python generate.py --temperature 0.7 --top-k 50
+```
+
+### Config Not Found Error
+```bash
+# List available configs
+python train.py --list-configs
+
+# Use correct config name
+python train.py --config small  # Not 'Small' or 'SMALL'
+```
+
+## Validation
+
+### Test Model Architecture
+```bash
+python test_model.py
+# Should print: "ALL TESTS PASSED ✓"
+```
+
+### Check Available Configurations
+```bash
+python create_model.py --list-configs
+```
+
+### Inspect Specific Configuration
+```bash
+python create_model.py --config medium
+```
+
+### View Training Progress
+```bash
+# View training logs
+tail -f logs/training_log.csv
+
+# Check saved checkpoints
+ls -lh checkpoints/
+```
+
+### Verify Config Usage
+```python
+from config import get_config
+
+# Load configuration
+config = get_config('small')
+print(f"Embed dim: {config.embed_dim}")
+print(f"Num layers: {config.num_layers}")
+
+# Convert to dict for model
+config.vocab_size = 120
+model_kwargs = config.to_dict()
+```
+
+## What This Project Does ✓
+- Trains a working GPT-style language model
+- Generates coherent text for 2-3 sentences (small config)
+- Demonstrates transformer architecture
+- Provides configurable model sizes
+- Uses proper configuration management
+- Runs on consumer hardware (M1 Mac)
+
+## What This Project Doesn't Do ✗
+- Answer questions reliably
+- Follow instructions
+- Reason logically
+- Maintain long coherence (>4 sentences even with large config)
+- Match GPT-3/GPT-4 quality
+
+## Technical Specifications
+
+**Architecture:** Decoder-only transformer (GPT-style)  
+**Training Data:** Simple English Wikipedia (~238MB text)  
+**Tokenization:** Character-level (~120 vocab size)  
+**Configurations:** 4 predefined (tiny/small/medium/large)  
+**Context Window:** 128-512 tokens (config-dependent)  
+**Parameters:** 500K-25M (config-dependent)  
+**Training Time:** 2-24 hours (config-dependent)  
+**Framework:** PyTorch 2.0+
+
+## Configuration Management
+
+### How Configs Are Used
+
+1. **Define configs in config.py:**
+   ```python
+   SMALL_CONFIG = ModelConfig(
+       embed_dim=128,
+       num_heads=4,
+       num_layers=4,
+       max_seq_len=256
+   )
+   ```
+
+2. **Load config in train.py:**
+   ```python
+   from config import get_config
+   config = get_config('small')
+   config.vocab_size = vocab_size
+   model = GPTModel(**config.to_dict())
+   ```
+
+3. **Use config in other scripts:**
+   ```python
+   # create_model.py, test_model.py also use get_config()
+   config = get_config('medium')
+   ```
+
+### Benefits of Config System
+- ✓ Centralized configuration management
+- ✓ Easy to switch between model sizes
+- ✓ Validation of hyperparameters
+- ✓ Consistent configs across scripts
+- ✓ No hardcoded values in train.py
+
+## Next Steps
+
+1. **Improve tokenization:** Use BPE instead of character-level for better efficiency
+2. **More data:** Train on full English Wikipedia (10GB+) for better knowledge
+3. **Larger model:** Try medium or large config for better quality
+4. **Fine-tuning:** Adapt to specific domains with additional training
+5. **Instruction tuning:** Add prompt-response pairs for instruction following
+
+## License & Credits
+
+Educational project demonstrating GPT architecture. Based on the "Attention is All You Need" paper (Vaswani et al., 2017) and GPT-2 architecture.
 
 ---
 
-## Next Steps & Experiments
+**Quick Commands Summary:**
+```bash
+# Setup
+pip install -r requirements.txt
 
-1. **Scale Up:** Train on full English Wikipedia (10-50GB) for significant quality improvements
-2. **Add BPE Tokenization:** Smaller vocab, better efficiency, handles rare words better
-3. **Increase Model Size:** 8-12 layers, 256-512 dims (requires better GPU)
-4. **Fine-tune:** Train on specific domain (poetry, code, medical text, etc.)
-5. **Add Instruction Following:** Collect prompt-response pairs for instruction tuning
-6. **Implement Web Interface:** Deploy with Flask or Gradio for easy sharing
-7. **Try Other Languages:** Train on non-English Wikipedia for multilingual models
-8. **Compare Datasets:** Try training on different corpora (books, news, code) to see how data affects style
+# View configs
+python train.py --list-configs
 
----
+# Test architecture
+python test_model.py
 
-## Learning Outcomes
+# Preprocess data
+python preprocess_data.py --input data/raw_wikipedia.txt
 
-By completing this project, you'll understand:
-- How transformers process sequential data
-- Why scaling laws matter (more data + bigger model = better results)
-- The tokenization-to-generation pipeline
-- Why even billion-parameter models still hallucinate
-- That "intelligence" emerges from pattern matching at scale
+# Tokenize
+python tokenize.py
 
-**Remember:** Your Parrot with Alzheimer's is terrible at language, but you've now built the same architecture that powers GPT-4, just 100,000x smaller!
+# Train (choose config)
+python train.py --config small
+
+# Generate
+python generate.py --checkpoint checkpoints/model_best.pt --prompt "Hello"
+```
+
+**Questions?** Check file docstrings or run with `--help` flag.

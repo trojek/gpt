@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
 """
-IMPROVED Training Script for Better Factual Knowledge
-Key improvements:
-1. Train for 50,000 steps (not 15,000)
-2. Larger learning rate warmup
-3. Better evaluation
-4. More frequent checkpointing
+Training Script for GPT Model
+Trains a transformer language model on tokenized text data.
 """
 
 import argparse
-import json
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Tuple
 
 import numpy as np
 import torch
@@ -20,6 +15,7 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
 from model import GPTModel
+from config import get_config, print_config_comparison
 
 
 class TextDataset(Dataset):
@@ -67,7 +63,7 @@ def estimate_loss(
     model: nn.Module,
     data_loader: DataLoader,
     device: torch.device,
-    max_batches: int = 50  # INCREASED from 20
+    max_batches: int = 20
 ) -> float:
     """Estimate loss on validation set."""
     model.eval()
@@ -85,25 +81,23 @@ def estimate_loss(
     return np.mean(losses)
 
 
-def train_improved(
+def train(
     model: GPTModel,
     train_loader: DataLoader,
     val_loader: DataLoader,
     device: torch.device,
-    max_steps: int = 1200000,  
-    learning_rate: float = 3e-4,  # Slightly lower for stability
-    warmup_steps: int = 4000,  # INCREASED from 500
-    weight_decay: float = 0.01,
+    max_steps: int = 15000,
+    learning_rate: float = 3e-4,
+    warmup_steps: int = 500,
+    weight_decay: float = 0.1,
     grad_clip: float = 1.0,
-    eval_interval: int = 1000,  # INCREASED from 500
-    save_interval: int = 2500,  # INCREASED from 1500
+    eval_interval: int = 500,
+    save_interval: int = 1500,
     log_interval: int = 100,
     checkpoint_dir: Path = Path("checkpoints"),
     log_dir: Path = Path("logs")
 ):
-    """
-    Improved training with better settings for factual knowledge.
-    """
+    """Train the model."""
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
     
@@ -130,7 +124,7 @@ def train_improved(
     print(f"Device: {device}")
     print(f"Max steps: {max_steps:,}")
     print(f"Learning rate: {learning_rate}")
-    print(f"Warmup steps: {warmup_steps:,} ")
+    print(f"Warmup steps: {warmup_steps:,}")
     print(f"Batch size: {train_loader.batch_size}")
     print(f"Parameters: {model.get_num_params():,}")
     print(f"Context length: {model.max_seq_len}")
@@ -186,7 +180,7 @@ def train_improved(
         
         # Evaluation
         if (step + 1) % eval_interval == 0:
-            val_loss = estimate_loss(model, val_loader, device, max_batches=50)
+            val_loss = estimate_loss(model, val_loader, device, max_batches=20)
             perplexity = np.exp(val_loss)
             elapsed = time.time() - start_time
             
@@ -194,7 +188,7 @@ def train_improved(
             is_best = val_loss < best_val_loss
             if is_best:
                 best_val_loss = val_loss
-                best_marker = " 🌟 BEST SO FAR!"
+                best_marker = " 🌟 BEST"
             else:
                 best_marker = ""
             
@@ -249,38 +243,70 @@ def train_improved(
     print(f"Total time: {(time.time() - start_time)/3600:.2f} hours")
     print(f"Log file: {log_file}")
     print()
-    print("Next: Test with generate.py using checkpoints/model_best.pt")
+    print("Next: python generate.py --checkpoint checkpoints/model_best.pt --prompt 'Your text'")
     print("="*70)
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Improved training for better factual knowledge')
+    parser = argparse.ArgumentParser(description='Train GPT model')
     
     # Data arguments
-    parser.add_argument('--train-data', type=str, default='data/train_tokens.npy')
-    parser.add_argument('--val-data', type=str, default='data/val_tokens.npy')
-    parser.add_argument('--vocab-path', type=str, default='data/tokenizer.json')  # ← CHANGED
+    parser.add_argument('--train-data', type=str, default='data/train_tokens.npy',
+                        help='Path to training tokens')
+    parser.add_argument('--val-data', type=str, default='data/val_tokens.npy',
+                        help='Path to validation tokens')
+    parser.add_argument('--vocab-path', type=str, default='data/vocab.json',
+                        help='Path to vocabulary file')
     
-    # Model arguments (use improved config)
-    parser.add_argument('--embed-dim', type=int, default=256, help='Embedding dimension')
-    parser.add_argument('--num-heads', type=int, default=8, help='Number of attention heads')
-    parser.add_argument('--num-layers', type=int, default=8, help='Number of transformer layers')
-    parser.add_argument('--max-seq-len', type=int, default=512, help='Max sequence length')
+    # Model arguments
+    parser.add_argument('--config', type=str, default='small',
+                        choices=['tiny', 'small', 'medium', 'large'],
+                        help='Model configuration')
     
     # Training arguments
-    parser.add_argument('--batch-size', type=int, default=24, help='Batch size (reduced for larger model)')
-    parser.add_argument('--max-steps', type=int, default=50000, help='Maximum training steps')
-    parser.add_argument('--learning-rate', type=float, default=2e-4, help='Learning rate')
-    parser.add_argument('--warmup-steps', type=int, default=2000, help='Warmup steps')
+    parser.add_argument('--batch-size', type=int, default=32,
+                        help='Batch size')
+    parser.add_argument('--max-steps', type=int, default=15000,
+                        help='Maximum training steps')
+    parser.add_argument('--learning-rate', type=float, default=3e-4,
+                        help='Learning rate')
+    parser.add_argument('--warmup-steps', type=int, default=500,
+                        help='Warmup steps')
+    parser.add_argument('--device', type=str, default=None,
+                        choices=['mps', 'cuda', 'cpu'],
+                        help='Device to use (auto-detect if not specified)')
+    
+    # Debug option
+    parser.add_argument('--list-configs', action='store_true',
+                        help='List available configurations and exit')
     
     args = parser.parse_args()
     
+    # List configs and exit
+    if args.list_configs:
+        print_config_comparison()
+        return
+    
     # Load tokenizer to get vocab size
     print("Loading tokenizer...")
-    from tokenizer import SubwordTokenizer  # ← CHANGED
-    tokenizer = SubwordTokenizer.load(args.vocab_path)  # ← CHANGED
-    vocab_size = tokenizer.vocab_size
+    try:
+        from tokenizer import CharTokenizer
+        tokenizer = CharTokenizer.load(args.vocab_path)
+        vocab_size = tokenizer.vocab_size
+        print(f"✓ Character tokenizer loaded")
+    except:
+        try:
+            from tokenizer import SubwordTokenizer
+            tokenizer = SubwordTokenizer.load(args.vocab_path)
+            vocab_size = tokenizer.vocab_size
+            print(f"✓ Subword tokenizer loaded")
+        except Exception as e:
+            print(f"Error loading tokenizer: {e}")
+            print("Make sure you've run tokenization first: python tokenize.py")
+            return
+    
     print(f"Vocabulary size: {vocab_size}")
+    print()
     
     # Load data
     print("Loading training data...")
@@ -293,26 +319,30 @@ def main():
     print()
     
     # Get device
-    device = get_device()
+    if args.device:
+        device = torch.device(args.device)
+    else:
+        device = get_device()
     print(f"Using device: {device}")
     print()
     
-    # Create IMPROVED model
-    print("Creating IMPROVED model...")
-    model = GPTModel(
-        vocab_size=vocab_size,
-        embed_dim=args.embed_dim,
-        num_heads=args.num_heads,
-        num_layers=args.num_layers,
-        max_seq_len=args.max_seq_len,
-        ff_dim=args.embed_dim * 4
-    )
+    # Get model configuration
+    print(f"Creating model with '{args.config}' configuration...")
+    config = get_config(args.config)
+    config.vocab_size = vocab_size
+    
+    # Create model
+    model = GPTModel(**config.to_dict())
     model = model.to(device)
+    
+    print(f"Model parameters: {model.get_num_params():,}")
+    print(f"Model size: {model.get_num_params() * 4 / 1024 / 1024:.2f} MB")
     print()
     
     # Create datasets
-    train_dataset = TextDataset(train_tokens, args.max_seq_len)
-    val_dataset = TextDataset(val_tokens, args.max_seq_len)
+    context_length = config.max_seq_len
+    train_dataset = TextDataset(train_tokens, context_length)
+    val_dataset = TextDataset(val_tokens, context_length)
     
     # Create dataloaders
     train_loader = DataLoader(
@@ -332,7 +362,7 @@ def main():
     )
     
     # Train
-    train_improved(
+    train(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,

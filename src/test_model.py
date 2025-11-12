@@ -92,14 +92,44 @@ def test_model_configs():
     """Test predefined model configurations."""
     print("Testing model configurations...")
     
-    configs = ['tiny', 'small', 'medium']
+    configs = ['tiny', 'small', 'medium', 'large']
     
     for config_name in configs:
         config = get_config(config_name)
         config.vocab_size = 100
+        
+        # Verify config values
+        assert config.embed_dim % config.num_heads == 0, \
+            f"embed_dim must be divisible by num_heads in {config_name}"
+        
+        # Create model with config
         model = GPTModel(**config.to_dict())
         n_params = model.get_num_params()
-        print(f"  ✓ {config_name.capitalize()} config: {n_params:,} parameters")
+        
+        print(f"  ✓ {config_name.capitalize():6s} config: {n_params:>8,} parameters "
+              f"(layers={config.num_layers}, heads={config.num_heads})")
+
+
+def test_config_validation():
+    """Test configuration validation."""
+    print("Testing configuration validation...")
+    
+    # Valid config
+    try:
+        config = ModelConfig(embed_dim=128, num_heads=4)
+        print("  ✓ Valid config accepted")
+    except:
+        raise AssertionError("Valid config was rejected")
+    
+    # Invalid config (embed_dim not divisible by num_heads)
+    try:
+        config = ModelConfig(embed_dim=100, num_heads=3)
+        raise AssertionError("Invalid config was accepted")
+    except AssertionError as e:
+        if "divisible" in str(e):
+            print("  ✓ Invalid config rejected")
+        else:
+            raise
 
 
 def test_save_load():
@@ -107,11 +137,13 @@ def test_save_load():
     print("Testing save/load...")
     
     # Create and save model
-    model1 = GPTModel(vocab_size=100, embed_dim=64, num_layers=2)
+    config = get_config('tiny')
+    config.vocab_size = 100
+    model1 = GPTModel(**config.to_dict())
     torch.save(model1.state_dict(), '/tmp/test_model.pt')
     
     # Load model
-    model2 = GPTModel(vocab_size=100, embed_dim=64, num_layers=2)
+    model2 = GPTModel(**config.to_dict())
     model2.load_state_dict(torch.load('/tmp/test_model.pt'))
     
     # Verify weights match
@@ -121,11 +153,34 @@ def test_save_load():
     print("  ✓ Save/load working correctly")
 
 
+def test_config_to_dict():
+    """Test config to_dict method."""
+    print("Testing config.to_dict()...")
+    
+    config = get_config('small')
+    config.vocab_size = 100
+    
+    config_dict = config.to_dict()
+    
+    # Verify all required keys are present
+    required_keys = ['vocab_size', 'embed_dim', 'num_heads', 'num_layers', 
+                     'max_seq_len', 'ff_dim', 'dropout']
+    for key in required_keys:
+        assert key in config_dict, f"Missing key: {key}"
+    
+    # Verify model can be created from dict
+    model = GPTModel(**config_dict)
+    assert model.vocab_size == 100
+    assert model.embed_dim == config.embed_dim
+    
+    print("  ✓ config.to_dict() working correctly")
+
+
 def main():
     """Run all tests."""
-    print("="*50)
+    print("="*60)
     print("MODEL ARCHITECTURE TESTS")
-    print("="*50)
+    print("="*60)
     print()
     
     torch.manual_seed(42)
@@ -149,15 +204,29 @@ def main():
         test_model_configs()
         print()
         
+        test_config_validation()
+        print()
+        
+        test_config_to_dict()
+        print()
+        
         test_save_load()
         print()
         
-        print("="*50)
+        print("="*60)
         print("ALL TESTS PASSED ✓")
-        print("="*50)
+        print("="*60)
+        print()
+        print("Your model architecture is working correctly!")
+        print("Next steps:")
+        print("  1. python tokenize.py           # Prepare data")
+        print("  2. python train.py --config small  # Train model")
+        print("  3. python generate.py           # Generate text")
         
     except Exception as e:
         print(f"\n✗ Test failed with error: {e}")
+        import traceback
+        traceback.print_exc()
         raise
 
 
