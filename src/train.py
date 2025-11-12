@@ -5,6 +5,7 @@ Trains a transformer language model on tokenized text data.
 """
 
 import argparse
+import sys
 import time
 from pathlib import Path
 from typing import Tuple
@@ -16,6 +17,8 @@ from torch.utils.data import Dataset, DataLoader
 
 from model import GPTModel
 from config import get_config, print_config_comparison
+from tokenizer import SubwordTokenizer
+from constants import VOCAB_FILE, TRAIN_TOKENS, VAL_TOKENS, CHECKPOINT_DIR, LOG_DIR
 
 
 class TextDataset(Dataset):
@@ -86,6 +89,8 @@ def train(
     train_loader: DataLoader,
     val_loader: DataLoader,
     device: torch.device,
+    config_dict: dict,
+    vocab_size: int,
     max_steps: int = 15000,
     learning_rate: float = 3e-4,
     warmup_steps: int = 500,
@@ -93,13 +98,11 @@ def train(
     grad_clip: float = 1.0,
     eval_interval: int = 500,
     save_interval: int = 1500,
-    log_interval: int = 100,
-    checkpoint_dir: Path = Path("checkpoints"),
-    log_dir: Path = Path("logs")
+    log_interval: int = 100
 ):
     """Train the model."""
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    log_dir.mkdir(parents=True, exist_ok=True)
+    CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
     
     # Optimizer
     optimizer = torch.optim.AdamW(
@@ -114,7 +117,7 @@ def train(
     start_time = time.time()
     
     # Open log file
-    log_file = log_dir / "training_log.csv"
+    log_file = LOG_DIR / "training_log.csv"
     with open(log_file, 'w') as f:
         f.write("step,train_loss,val_loss,lr,time,perplexity\n")
     
@@ -199,15 +202,18 @@ def train(
             
             # Save to log
             with open(log_file, 'a') as f:
+                avg_loss = np.mean(train_losses[-log_interval:]) if train_losses else 0
                 f.write(f"{step+1},{avg_loss:.6f},{val_loss:.6f},{lr:.8f},{elapsed:.2f},{perplexity:.4f}\n")
             
             # Save best model
             if is_best:
-                best_path = checkpoint_dir / "model_best.pt"
+                best_path = CHECKPOINT_DIR / "model_best.pt"
                 torch.save({
                     'step': step + 1,
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
+                    'config': config_dict,
+                    'vocab_size': vocab_size,
                     'loss': val_loss,
                     'perplexity': perplexity,
                 }, best_path)
@@ -215,11 +221,13 @@ def train(
         
         # Save checkpoint
         if (step + 1) % save_interval == 0:
-            checkpoint_path = checkpoint_dir / f"model_step_{step+1}.pt"
+            checkpoint_path = CHECKPOINT_DIR / f"model_step_{step+1}.pt"
             torch.save({
                 'step': step + 1,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'config': config_dict,
+                'vocab_size': vocab_size,
                 'loss': loss.item(),
             }, checkpoint_path)
             print(f"💾 Checkpoint saved: {checkpoint_path}")
@@ -227,11 +235,13 @@ def train(
         step += 1
     
     # Final checkpoint
-    final_path = checkpoint_dir / f"model_final_step_{max_steps}.pt"
+    final_path = CHECKPOINT_DIR / f"model_final_step_{max_steps}.pt"
     torch.save({
         'step': max_steps,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
+        'config': config_dict,
+        'vocab_size': vocab_size,
         'loss': loss.item(),
     }, final_path)
     
@@ -239,24 +249,16 @@ def train(
     print("TRAINING COMPLETE!")
     print("="*70)
     print(f"Final checkpoint: {final_path}")
-    print(f"Best model: checkpoints/model_best.pt (Perplexity: {np.exp(best_val_loss):.2f})")
+    print(f"Best model: {CHECKPOINT_DIR / 'model_best.pt'} (Perplexity: {np.exp(best_val_loss):.2f})")
     print(f"Total time: {(time.time() - start_time)/3600:.2f} hours")
     print(f"Log file: {log_file}")
     print()
-    print("Next: python generate.py --checkpoint checkpoints/model_best.pt --prompt 'Your text'")
+    print(f"Next: python generate.py --checkpoint {CHECKPOINT_DIR / 'model_best.pt'} --prompt 'Your text'")
     print("="*70)
 
 
 def main():
     parser = argparse.ArgumentParser(description='Train GPT model')
-    
-    # Data arguments
-    parser.add_argument('--train-data', type=str, default='data/train_tokens.npy',
-                        help='Path to training tokens')
-    parser.add_argument('--val-data', type=str, default='data/val_tokens.npy',
-                        help='Path to validation tokens')
-    parser.add_argument('--vocab-path', type=str, default='data/vocab.json',
-                        help='Path to vocabulary file')
     
     # Model arguments
     parser.add_argument('--config', type=str, default='small',
@@ -276,7 +278,7 @@ def main():
                         choices=['mps', 'cuda', 'cpu'],
                         help='Device to use (auto-detect if not specified)')
     
-    # Debug option
+    # Utility
     parser.add_argument('--list-configs', action='store_true',
                         help='List available configurations and exit')
     
@@ -287,35 +289,44 @@ def main():
         print_config_comparison()
         return
     
-    # Load tokenizer to get vocab size
-    print("Loading tokenizer...")
+    # Load tokenizer
+    print("Loading BPE tokenizer...")
     try:
-        from tokenizer import CharTokenizer
-        tokenizer = CharTokenizer.load(args.vocab_path)
+        tokenizer = SubwordTokenizer.load(str(VOCAB_FILE))
         vocab_size = tokenizer.vocab_size
-        print(f"✓ Character tokenizer loaded")
-    except:
-        try:
-            from tokenizer import SubwordTokenizer
-            tokenizer = SubwordTokenizer.load(args.vocab_path)
-            vocab_size = tokenizer.vocab_size
-            print(f"✓ Subword tokenizer loaded")
-        except Exception as e:
-            print(f"Error loading tokenizer: {e}")
-            print("Make sure you've run tokenization first: python tokenize.py")
-            return
-    
-    print(f"Vocabulary size: {vocab_size}")
+        print(f"✓ Tokenizer loaded from: {VOCAB_FILE}")
+        print(f"  Vocabulary size: {vocab_size}")
+        print(f"  Merge rules: {len(tokenizer.merges)}")
+    except FileNotFoundError:
+        print(f"Error: Tokenizer not found at {VOCAB_FILE}")
+        print("Please run tokenization first:")
+        print("  python tokenize.py")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error loading tokenizer: {e}")
+        sys.exit(1)
     print()
     
     # Load data
     print("Loading training data...")
-    train_tokens = np.load(args.train_data)
-    print(f"Training tokens: {len(train_tokens):,}")
+    try:
+        train_tokens = np.load(str(TRAIN_TOKENS))
+        print(f"✓ Training tokens loaded: {len(train_tokens):,}")
+    except FileNotFoundError:
+        print(f"Error: Training data not found at {TRAIN_TOKENS}")
+        print("Please run tokenization first:")
+        print("  python tokenize.py")
+        sys.exit(1)
     
     print("Loading validation data...")
-    val_tokens = np.load(args.val_data)
-    print(f"Validation tokens: {len(val_tokens):,}")
+    try:
+        val_tokens = np.load(str(VAL_TOKENS))
+        print(f"✓ Validation tokens loaded: {len(val_tokens):,}")
+    except FileNotFoundError:
+        print(f"Error: Validation data not found at {VAL_TOKENS}")
+        print("Please run tokenization first:")
+        print("  python tokenize.py")
+        sys.exit(1)
     print()
     
     # Get device
@@ -331,12 +342,18 @@ def main():
     config = get_config(args.config)
     config.vocab_size = vocab_size
     
+    # Validate vocab size matches
+    assert config.vocab_size == vocab_size, \
+        f"Config vocab_size ({config.vocab_size}) != tokenizer vocab_size ({vocab_size})"
+    
     # Create model
-    model = GPTModel(**config.to_dict())
+    config_dict = config.to_dict()
+    model = GPTModel(**config_dict)
     model = model.to(device)
     
-    print(f"Model parameters: {model.get_num_params():,}")
-    print(f"Model size: {model.get_num_params() * 4 / 1024 / 1024:.2f} MB")
+    print(f"✓ Model created")
+    print(f"  Parameters: {model.get_num_params():,}")
+    print(f"  Size: {model.get_num_params() * 4 / 1024 / 1024:.2f} MB (float32)")
     print()
     
     # Create datasets
@@ -367,11 +384,11 @@ def main():
         train_loader=train_loader,
         val_loader=val_loader,
         device=device,
+        config_dict=config_dict,
+        vocab_size=vocab_size,
         max_steps=args.max_steps,
         learning_rate=args.learning_rate,
-        warmup_steps=args.warmup_steps,
-        checkpoint_dir=Path("checkpoints"),
-        log_dir=Path("logs")
+        warmup_steps=args.warmup_steps
     )
 
 

@@ -219,9 +219,9 @@ def main():
         print()
         print("Your model architecture is working correctly!")
         print("Next steps:")
-        print("  1. python tokenize.py           # Prepare data")
+        print("  1. python tokenize.py              # Prepare data")
         print("  2. python train.py --config small  # Train model")
-        print("  3. python generate.py           # Generate text")
+        print("  3. python generate.py              # Generate text")
         
     except Exception as e:
         print(f"\n✗ Test failed with error: {e}")

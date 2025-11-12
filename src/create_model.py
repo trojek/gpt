@@ -5,26 +5,14 @@ Displays model structure and parameter counts.
 """
 
 import argparse
+import sys
 import torch
 from pathlib import Path
 
 from model import GPTModel
 from config import get_config, print_config_comparison
-
-
-def load_vocab_size(vocab_path: str) -> int:
-    """Load vocabulary size from tokenizer."""
-    try:
-        from tokenizer import CharTokenizer
-        tokenizer = CharTokenizer.load(vocab_path)
-        return tokenizer.vocab_size
-    except:
-        try:
-            from tokenizer import SubwordTokenizer
-            tokenizer = SubwordTokenizer.load(vocab_path)
-            return tokenizer.vocab_size
-        except Exception as e:
-            raise RuntimeError(f"Could not load tokenizer from {vocab_path}: {e}")
+from tokenizer import SubwordTokenizer
+from constants import VOCAB_FILE
 
 
 def print_model_info(model: GPTModel):
@@ -75,12 +63,6 @@ def print_model_info(model: GPTModel):
 def main():
     parser = argparse.ArgumentParser(description='Create and inspect GPT model')
     parser.add_argument(
-        '--vocab-path',
-        type=str,
-        default='data/vocab.json',
-        help='Path to vocabulary file'
-    )
-    parser.add_argument(
         '--config',
         type=str,
         default='small',
@@ -106,23 +88,25 @@ def main():
     print()
     
     # Check if vocab file exists
-    if not Path(args.vocab_path).exists():
-        print(f"Error: Vocabulary file not found at {args.vocab_path}")
+    if not VOCAB_FILE.exists():
+        print(f"Error: Vocabulary file not found at {VOCAB_FILE}")
         print("Please run tokenization first:")
         print("  python tokenize.py")
         print()
         print("Or list available configurations:")
         print("  python create_model.py --list-configs")
-        return
+        sys.exit(1)
     
     # Load vocabulary size
-    print(f"Loading tokenizer from: {args.vocab_path}")
+    print(f"Loading BPE tokenizer from: {VOCAB_FILE}")
     try:
-        vocab_size = load_vocab_size(args.vocab_path)
+        tokenizer = SubwordTokenizer.load(str(VOCAB_FILE))
+        vocab_size = tokenizer.vocab_size
         print(f"✓ Vocabulary size: {vocab_size}")
+        print(f"✓ Merge rules: {len(tokenizer.merges)}")
     except Exception as e:
         print(f"✗ Error loading tokenizer: {e}")
-        return
+        sys.exit(1)
     print()
     
     # Get configuration
